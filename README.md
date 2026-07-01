@@ -11,7 +11,7 @@ It contains the following improvements:
 * It (always, and by default) skips paths mounted on other devices from the starting path (du has this option, but it's not a well known param)
 * It formats numbers as human readable by default
 * It sorts the output by file size, high to low, even when formatting them to be human readable
-* It draws a per-directory bar chart, scaled so the largest directory fills the bar and the rest are sized against it
+* It visualizes results: rendered donut charts on graphics-capable terminals (kitty, Ghostty, iTerm2, sixel), and a scaled per-directory bar chart everywhere else
 * When files sitting directly in the scanned directory add up to a meaningful share of the tree, it breaks that "in this dir" total down into its biggest files
 * It (by default) only returns results for directories using at least 1% of all files under the path
 * It colors output when writing to a terminal and drops the colors automatically when piped or redirected
@@ -77,8 +77,8 @@ Beta.
 
 It works, and with its skipping optimizations it can be at least 10x as fast as `du`.
 
-It is not deeply battle tested or proven to be correct, and so is currently unsuitable for distribution. Extensive
-tests need to be created.
+The formatting, chart, and JSON logic has unit and integration tests (`cargo test`), but the scan itself is not yet
+proven correct against `du` (see below), and it hasn't been broadly battle-tested across filesystems.
 
 TODOs:
 
@@ -88,7 +88,7 @@ different? TBD.
 
 Improvement: option to roll up summaries by common directory.
 
-Improvement: better handling of formatting options.
+Possible feature: an interactive mode (hover/drill-down over the treemap/donuts).
 
 ## Building
 
