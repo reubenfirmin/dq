@@ -1,10 +1,4 @@
-sz
-szDebug
-sz_rs
-sz_go
-sz_kn
-.gradle
+/dq
 .idea
-build
 /Cargo.lock
 /target/

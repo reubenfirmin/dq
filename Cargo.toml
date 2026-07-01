@@ -1,13 +1,16 @@
 [package]
-name = "sz"
+name = "dq"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 threadpool = "1.8.1"
 clap = { version = "4.1.13",  features = ["derive"] }
+viuer = { version = "0.11", default-features = false, features = ["icy_sixel"] }
+image = { version = "0.25", default-features = false }
+libc = "0.2"
 
 [[bin]]
-name = "sz"
+name = "dq"
 path = "src/rust/main.rs"
 

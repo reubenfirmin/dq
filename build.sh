@@ -1,28 +1,12 @@
 #!/bin/bash
+set -e
 
-echo BUILDING KOTLIN
-
-if ./gradlew assemble; then
-	cp build/bin/sz/releaseExecutable/sz.kexe ./sz_kn
-else
-	echo Kotlin build failed!
-fi	
-
-echo BUILDING RUST
+echo "Building dq (release)"
 
 if cargo build --release; then
-	cp target/release/sz ./sz_rs
+	cp target/release/dq ./dq
+	echo "Built ./dq"
 else
-	echo Rust build failed!
-fi
-
-echo BUILDING GO
-
-pushd src/golang
-if go build; then
-	echo Success!
-	popd
-	mv src/golang/sz ./sz_go
-else
-	echo Go build failed!
+	echo "Build failed!" >&2
+	exit 1
 fi
