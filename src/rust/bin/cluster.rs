@@ -31,9 +31,10 @@ pub struct Cluster {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric { Cpu, Memory, Swap }
 
-/// Resolve, attribute (with parent inheritance for bare-runtime/same-as-parent children), aggregate,
-/// and sort descending by the active metric.
-pub fn cluster(procs: &[proc::Proc], metric: Metric) -> Vec<Cluster> {
+/// Every pid's effective identity (its own resolved identity, with bare-runtime and
+/// same-as-parent children folded into their parent), memoized across the whole process list.
+/// Shared by `cluster` and by net mode's socket-to-cluster join, so both group identically.
+pub fn effective_identities(procs: &[proc::Proc]) -> HashMap<i32, String> {
     let own_identity: HashMap<i32, String> = procs.iter()
         .map(|p| (p.pid, identity::resolve(&p.comm, &p.cmdline)))
         .collect();
@@ -43,6 +44,13 @@ pub fn cluster(procs: &[proc::Proc], metric: Metric) -> Vec<Cluster> {
     for p in procs {
         effective_identity(p.pid, &own_identity, &parent, &mut effective);
     }
+    effective
+}
+
+/// Resolve, attribute (with parent inheritance for bare-runtime/same-as-parent children), aggregate,
+/// and sort descending by the active metric.
+pub fn cluster(procs: &[proc::Proc], metric: Metric) -> Vec<Cluster> {
+    let effective = effective_identities(procs);
 
     let mut groups: HashMap<String, (f64, u64, u64, Vec<Member>)> = HashMap::new();
     for p in procs {
@@ -149,5 +157,18 @@ mod tests {
         assert_eq!(cs[0].swap, 500);
         assert_eq!(cs[1].identity, "alpha");
         assert_eq!(cs[1].swap, 10);
+    }
+
+    #[test]
+    fn effective_identities_folds_children_into_parent() {
+        let procs = vec![
+            p(100, 1, "java", &["java", "org.gradle...GradleDaemon"], 0.0, 0),
+            p(101, 100, "java", &["java", "-cp", "/tmp/worker.jar"], 0.0, 0),
+            p(200, 1, "postgres", &["postgres", "-D", "/data"], 0.0, 0),
+        ];
+        let ids = effective_identities(&procs);
+        assert_eq!(ids.get(&100).map(String::as_str), Some("gradle"));
+        assert_eq!(ids.get(&101).map(String::as_str), Some("gradle"));
+        assert_eq!(ids.get(&200).map(String::as_str), Some("postgres"));
     }
 }

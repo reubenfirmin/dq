@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::identity;
+use crate::net;
 use crate::proc;
 
 /// One process selected for signaling: enough to preview and to signal.
@@ -15,6 +16,9 @@ pub struct Target {
     pub identity: String,
     pub cmd: String,
     pub uid: u32,
+    /// The matched socket's label ("tcp LISTEN  0.0.0.0:8080"), set only on net-mode match
+    /// roots so the preview can show WHY a process was selected.
+    pub sock: Option<String>,
 }
 
 /// Match `pattern` (case-insensitive substring of resolved identity, comm, or full cmdline;
@@ -34,17 +38,6 @@ pub fn select(procs: &[proc::Proc], pattern: &str, exact: bool, self_pid: i32) -
     // pid -> Proc, for lookups while expanding/excluding.
     let by_pid: HashMap<i32, &proc::Proc> = procs.iter().map(|p| (p.pid, p)).collect();
 
-    let matches_pattern = |p: &proc::Proc| -> bool {
-        let ident = identity::resolve(&p.comm, &p.cmdline);
-        if exact {
-            ident.to_lowercase() == needle
-        } else {
-            ident.to_lowercase().contains(&needle)
-                || p.comm.to_lowercase().contains(&needle)
-                || p.cmdline.join(" ").to_lowercase().contains(&needle)
-        }
-    };
-
     // Compute exclusions first (self, self's ancestor chain, pid 1). These must never be signaled,
     // AND must not seed subtree expansion: otherwise matching the invoking shell (whose command line
     // contains the pattern you just typed) would sweep in the shell's OTHER children, killing
@@ -56,7 +49,7 @@ pub fn select(procs: &[proc::Proc], pattern: &str, exact: bool, self_pid: i32) -
         if excluded.contains(&p.pid) {
             continue;
         }
-        if matches_pattern(p) {
+        if matches_pattern(p, &needle, exact) {
             expand_subtree(p.pid, &children, &mut selected);
         }
     }
@@ -70,6 +63,68 @@ pub fn select(procs: &[proc::Proc], pattern: &str, exact: bool, self_pid: i32) -
             identity: identity::resolve(&p.comm, &p.cmdline),
             cmd: p.cmdline.join(" "),
             uid: p.uid,
+            sock: None,
+        })
+        .collect()
+}
+
+/// The match rule shared by `select` and `select_owning`: exact compares the resolved identity
+/// only; substring checks identity, comm, and the joined cmdline, all case-insensitively.
+/// `needle` must already be lowercased.
+fn matches_pattern(p: &proc::Proc, needle: &str, exact: bool) -> bool {
+    let ident = identity::resolve(&p.comm, &p.cmdline);
+    if exact {
+        ident.to_lowercase() == needle
+    } else {
+        ident.to_lowercase().contains(needle)
+            || p.comm.to_lowercase().contains(needle)
+            || p.cmdline.join(" ").to_lowercase().contains(needle)
+    }
+}
+
+/// Net-mode kill selection: each `owners` entry is a matched socket and its owning pid. Owner
+/// pids seed subtree expansion (descendants included, same as `select`), after the same
+/// exclusions (self, ancestor chain, pid 1) and an optional pattern narrowing applied to the
+/// OWNER process (children join via the tree, not the pattern). Root targets carry their
+/// socket's label for the preview; a pid owning several matched sockets shows the first.
+pub fn select_owning(procs: &[proc::Proc], owners: &[(net::Sock, i32)], pattern: Option<&str>, exact: bool, self_pid: i32) -> Vec<Target> {
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for p in procs {
+        children.entry(p.ppid).or_default().push(p.pid);
+    }
+    let by_pid: HashMap<i32, &proc::Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+    let excluded = excluded_set(self_pid, &by_pid);
+    let needle = pattern.map(str::to_lowercase);
+
+    let mut sock_of: HashMap<i32, String> = HashMap::new();
+    let mut selected: HashSet<i32> = HashSet::new();
+    for (sock, pid) in owners {
+        if excluded.contains(pid) {
+            continue;
+        }
+        let owner = match by_pid.get(pid) {
+            Some(p) => p,
+            None => continue
+        };
+        if let Some(n) = &needle {
+            if !matches_pattern(owner, n, exact) {
+                continue;
+            }
+        }
+        sock_of.entry(*pid).or_insert_with(|| sock.label());
+        expand_subtree(*pid, &children, &mut selected);
+    }
+
+    let mut pids: Vec<i32> = selected.difference(&excluded).copied().collect();
+    pids.sort_unstable();
+    pids.into_iter()
+        .filter_map(|pid| by_pid.get(&pid))
+        .map(|p| Target {
+            pid: p.pid,
+            identity: identity::resolve(&p.comm, &p.cmdline),
+            cmd: p.cmdline.join(" "),
+            uid: p.uid,
+            sock: sock_of.get(&p.pid).cloned(),
         })
         .collect()
 }
@@ -299,7 +354,54 @@ mod tests {
     }
 
     fn t(pid: i32) -> Target {
-        Target { pid, identity: "x".into(), cmd: "x".into(), uid: 0 }
+        Target { pid, identity: "x".into(), cmd: "x".into(), uid: 0, sock: None }
+    }
+
+    fn owner_sock(port: u16) -> crate::net::Sock {
+        crate::net::Sock {
+            proto: crate::net::Proto::Tcp, state: crate::net::SockState::Listen,
+            local: "0.0.0.0".parse().unwrap(), local_port: port,
+            peer: "0.0.0.0".parse().unwrap(), peer_port: 0,
+            uid: 1000, inode: 1
+        }
+    }
+
+    #[test]
+    fn select_owning_expands_subtree_and_labels_root() {
+        let procs = vec![
+            p(100, 1, "node", &["node", "server.js"], 0.0, 0),
+            p(101, 100, "node", &["node", "worker"], 0.0, 0),
+            p(200, 1, "vim", &["vim", "notes"], 0.0, 0),
+        ];
+        let owners = vec![(owner_sock(8080), 100)];
+        let t = select_owning(&procs, &owners, None, false, 999);
+        let pids: Vec<i32> = t.iter().map(|x| x.pid).collect();
+        assert_eq!(pids, vec![100, 101]); // owner + child, not the unrelated vim
+        assert_eq!(t[0].sock.as_deref(), Some("tcp LISTEN  0.0.0.0:8080"));
+        assert_eq!(t[1].sock, None); // subtree child matched via its parent, no socket of its own
+    }
+
+    #[test]
+    fn select_owning_pattern_narrows_owners() {
+        let procs = vec![
+            p(100, 1, "node", &["node", "server.js"], 0.0, 0),
+            p(200, 1, "python3", &["python3", "-m", "http.server"], 0.0, 0),
+        ];
+        let owners = vec![(owner_sock(8080), 100), (owner_sock(8081), 200)];
+        let t = select_owning(&procs, &owners, Some("python"), false, 999);
+        let pids: Vec<i32> = t.iter().map(|x| x.pid).collect();
+        assert_eq!(pids, vec![200]);
+    }
+
+    #[test]
+    fn select_owning_respects_exclusions() {
+        // The owning pid IS our ancestor shell: never signaled, never a match root.
+        let procs = vec![
+            p(50, 1, "bash", &["bash"], 0.0, 0),
+            p(60, 50, "pq", &["pq", "--port", "8080", "--kill"], 0.0, 0),
+        ];
+        let owners = vec![(owner_sock(8080), 50)];
+        assert!(select_owning(&procs, &owners, None, false, 60).is_empty());
     }
 
     struct Mock {

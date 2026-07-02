@@ -6,8 +6,9 @@ common rendering core: donut charts on graphics-capable terminals, colored text 
 JSON for machines. Written in Rust.
 
 * **`dq`** (disk query) - what's using my disk space? A faster, smarter `du`.
-* **`pq`** (process query) - what's eating my CPU, memory, or swap? A clustered, visual `top`, with a
-  friendlier `pkill` built in.
+* **`pq`** (process query) - what's eating my CPU, memory, or swap? Who's listening on, or talking to,
+  the network? A clustered, visual `top` with a friendlier `pkill` and an `lsof -i`/`ss` replacement
+  built in.
 
 ## Getting started
 
@@ -54,10 +55,12 @@ member processes.
 
     pq --cpu / --memory / --swap   # sort/chart metric (default: cpu)
     pq -n N                          # clusters to show (default 15)
-    pq -v                             # expand clusters to member processes
+    pq -v                             # expand clusters (processes; connections in --net mode)
     pq --interval MS                   # CPU sample interval (default 400ms)
     pq --json                           # machine-readable output
     pq PATTERN                           # filter report to matching clusters
+    pq --net [--listen] [--port N]       # network mode: see below
+    pq --kill PATTERN / --port N --kill   # kill mode: see below
 
 Per-cluster memory/swap sums each member's RSS/`VmSwap`, which over-counts shared pages (same caveat as
 most process viewers).
@@ -71,3 +74,42 @@ Previews the matching tree and confirms before acting. Escalates: SIGTERM, wait 
 unrelated sibling jobs.
 
     pq --kill PATTERN [--dry-run] [-y/--yes] [-x/--exact] [--signal SIG] [--grace SECONDS]
+
+### pq --net: who is this box talking to?
+
+Reads `/proc/net` directly (no lsof/ss) and attributes sockets to processes via `/proc/<pid>/fd`,
+then clusters by the same resolved identity as the main report: Chrome's renderer swarm shows as
+one `chrome` row. The overview is a grid, sorted by traffic: connection count, bytes sent and
+received (from the same sock_diag counters `ss -i` reads; TCP only, cumulative per connection),
+process, the ports it listens on, and the peer ports it talks to (`:443 x28`), with
+world-exposed listeners (bound to `0.0.0.0`/`::`) in red. Unattributed rows show their ports too. On graphics terminals the donut
+has two rings (outer = established, inner = listeners, same color per cluster, labeled
+beneath), every row carries the color swatch of its slice, and a cutoff row counts anything
+hidden by `-n`. Targeted queries answer in plain English instead of a donut: `pq --port N` and
+`pq --net NAME` draw a card per owning process (user, command line, and each socket with a
+reachability arrow: WORLD / local / iface), plus a paste-ready kill hint. A usage footer on the
+overview lists the common queries. Listeners bound to all interfaces (`0.0.0.0`/`::`) are world-exposed: they're counted
+in the header, their ports show red, and `-v` rows get a `[world]` marker. (Bind scope only; pq
+does not interrogate the firewall.) `-v` rows also carry a direction tag: `lsn`, `in`
+(accepted on a listened port), or `out` (this process dialed out). Without sudo, other users'
+sockets still appear (grouped by user) but can't be tied to a process; run with sudo for full
+attribution.
+
+    pq --net                  # lsn/est by cluster, listening ports, sorted by total conns
+    pq --net -v               # per-connection rows (direction, proto, state, local, peer)
+    pq --net --listen         # only listening sockets: what is serving on this box?
+    pq --port 8080            # who owns port 8080 (--port implies --net)
+    pq --net --json           # machine-readable output
+    pq --net PATTERN          # filter clusters, same matching as the main report
+
+### pq --port N --kill: free up a port
+
+Kills whatever is LISTENING on local port N (TCP listeners and bound UDP sockets only, so a
+client whose ephemeral port happens to be N is never touched). Same preview/confirm flow and
+TERM-grace-KILL escalation as `pq --kill`, with the matched socket shown in the preview. If the
+listener can't be attributed to a process (someone else's, no sudo), pq refuses rather than
+guessing.
+
+    pq --port 8080 --kill [--dry-run] [-y] [--signal SIG] [--grace SECONDS]
+
+In net mode without --port, pq --net --kill PATTERN (or with --listen) kills the trees of processes that own a matching socket and match the pattern.
