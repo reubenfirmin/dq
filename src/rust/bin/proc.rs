@@ -78,7 +78,7 @@ fn parse_stat(raw: &str) -> Option<(&str, Vec<&str>)> {
     let open = raw.find('(')?;
     let close = raw.rfind(')')?;
     let comm = &raw[open + 1..close];
-    let fields: Vec<&str> = raw[close + 1..].trim_start().split_whitespace().collect();
+    let fields: Vec<&str> = raw[close + 1..].split_whitespace().collect();
     Some((comm, fields))
 }
 
@@ -105,15 +105,15 @@ fn read_status(pid: i32) -> (u64, u64, u32) {
     let mut uid = 0u32;
     for line in raw.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
-            if let Some(kb) = rest.trim().split_whitespace().next() {
+            if let Some(kb) = rest.split_whitespace().next() {
                 rss = kb.parse::<u64>().unwrap_or(0) * 1024;
             }
         } else if let Some(rest) = line.strip_prefix("VmSwap:") {
-            if let Some(kb) = rest.trim().split_whitespace().next() {
+            if let Some(kb) = rest.split_whitespace().next() {
                 swap = kb.parse::<u64>().unwrap_or(0) * 1024;
             }
         } else if let Some(rest) = line.strip_prefix("Uid:") {
-            if let Some(first) = rest.trim().split_whitespace().next() {
+            if let Some(first) = rest.split_whitespace().next() {
                 uid = first.parse::<u32>().unwrap_or(0);
             }
         }
@@ -372,7 +372,7 @@ pub fn swap_info() -> (u64, u64) {
 }
 
 fn parse_kb(field: &str) -> u64 {
-    field.trim().split_whitespace().next()
+    field.split_whitespace().next()
         .and_then(|kb| kb.parse::<u64>().ok())
         .map(|kb| kb * 1024)
         .unwrap_or(0)

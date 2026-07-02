@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+echo "Linting (clippy)"
+cargo clippy --all-targets -- -D warnings
+
 echo "Building dq/pq (release)"
 
 if cargo build --release; then

@@ -214,7 +214,7 @@ fn list_direct_files(dir: &str) -> Vec<(String, u64)> {
             }
         }
     }
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|b| std::cmp::Reverse(b.1));
     files
 }
 

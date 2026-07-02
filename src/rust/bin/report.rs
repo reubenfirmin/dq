@@ -77,6 +77,7 @@ fn write_header<W: Write>(out: &mut W, mem_used: u64, mem_total: u64, swap_used:
 /// (largest bar-scaled by the top cluster's active-metric value), with `-v` expanding members
 /// indented. The swap column only appears when swap is actually in use (`swap_used > 0`), so
 /// swapless or idle-swap systems stay clean.
+#[allow(clippy::too_many_arguments)]
 pub fn write_text<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, mem_total: u64, swap_used: u64, swap_total: u64, cpu_total: f64, opts: &ReportOpts) -> io::Result<()> {
     let colors = opts.colors;
     write_header(out, mem_used, mem_total, swap_used, swap_total, cpu_total, colors)?;
@@ -486,6 +487,7 @@ fn write_two_tier_row<W: Write>(out: &mut W, color: (u8, u8, u8), rss: u64, swap
 
 /// Machine-readable JSON: `{ cpu_total, mem_used, mem_total, swap_used, swap_total, clusters: [...] }`,
 /// top-N clusters, each with its members (pid, cpu, mem, swap, cmd).
+#[allow(clippy::too_many_arguments)]
 pub fn write_json<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, mem_total: u64, swap_used: u64, swap_total: u64, cpu_total: f64, opts: &ReportOpts) -> io::Result<()> {
     writeln!(out, "{{")?;
     writeln!(out, "  \"cpu_total\": {},", round2(cpu_total))?;

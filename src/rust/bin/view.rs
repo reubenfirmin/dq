@@ -66,7 +66,7 @@ fn write_report<W: Write>(out: &mut W, dir: &str, results: &HashMap<String, u64>
         .filter(|(path, _)| path.as_str() != dir)
         .map(|(path, size)| (path, *size))
         .collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     if options.json {
         return write_json(out, dir, loose, full_size, &rows, loose_files, options);
@@ -228,6 +228,7 @@ fn write_legend(out: &mut dyn Write, legend: &[chart::Segment], total: u64, opti
 }
 
 /// Two color-keyed legends side by side, each column `col` cells wide with a `gap` between them.
+#[allow(clippy::too_many_arguments)]
 fn write_two_legends(out: &mut dyn Write, left: &[chart::Segment], left_total: u64, right: &[chart::Segment], right_total: u64, col: usize, gap: usize, options: &FormatOptions) -> io::Result<()> {
     let label_w = Some(col.saturating_sub(LEGEND_PREFIX).max(MIN_LABEL_WIDTH));
     let divider = " ".repeat(gap);
