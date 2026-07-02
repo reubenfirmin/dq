@@ -71,21 +71,25 @@ fn read_sample(pid: i32) -> Option<Sample> {
     Some(Sample { pid, ppid, comm, cmdline, rss, swap, uid, cpu_jiffies })
 }
 
-/// Parse /proc/<pid>/stat: comm is between the first `(` and the last `)` (it can itself contain
-/// spaces/parens), everything after that is space-separated fields starting at index 0 = state.
-/// ppid is field 1, utime/stime are fields 11/12 (0-indexed after the closing paren).
-fn read_stat(pid: i32) -> Option<(String, i32, u64)> {
-    let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+/// Split a /proc/<pid>/stat (or task/<tid>/stat) line into its comm and space-separated fields:
+/// comm is between the first `(` and the last `)` (it can itself contain spaces/parens), and the
+/// fields start at index 0 = state, immediately after the closing paren.
+fn parse_stat(raw: &str) -> Option<(&str, Vec<&str>)> {
     let open = raw.find('(')?;
     let close = raw.rfind(')')?;
-    let comm = raw[open + 1..close].to_string();
-    let rest = raw[close + 1..].trim_start();
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    // fields[0] = state, fields[1] = ppid, fields[11] = utime, fields[12] = stime.
+    let comm = &raw[open + 1..close];
+    let fields: Vec<&str> = raw[close + 1..].trim_start().split_whitespace().collect();
+    Some((comm, fields))
+}
+
+/// Parse /proc/<pid>/stat: ppid is field 1, utime/stime are fields 11/12 (0-indexed after comm).
+fn read_stat(pid: i32) -> Option<(String, i32, u64)> {
+    let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (comm, fields) = parse_stat(&raw)?;
     let ppid: i32 = fields.get(1)?.parse().ok()?;
     let utime: u64 = fields.get(11)?.parse().ok()?;
     let stime: u64 = fields.get(12)?.parse().ok()?;
-    Some((comm, ppid, utime + stime))
+    Some((comm.to_string(), ppid, utime + stime))
 }
 
 /// Parse /proc/<pid>/status for VmRSS and VmSwap (KB -> bytes) and the real uid (first number on
@@ -246,9 +250,7 @@ fn read_thread_stats(pid: i32) -> Option<Vec<(i32, u64)>> {
 /// page numbering, which lands at index 36 once comm/pid are stripped as `read_stat` does).
 fn read_task_stat(pid: i32, tid: i32) -> Option<(u64, i32)> {
     let raw = fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
-    let close = raw.rfind(')')?;
-    let rest = raw[close + 1..].trim_start();
-    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let (_, fields) = parse_stat(&raw)?;
     let utime: u64 = fields.get(11)?.parse().ok()?;
     let stime: u64 = fields.get(12)?.parse().ok()?;
     let processor: i32 = fields.get(36)?.parse().ok()?;
@@ -259,9 +261,7 @@ fn read_task_stat(pid: i32, tid: i32) -> Option<(u64, i32)> {
 /// fallback when per-thread stats aren't available.
 fn read_stat_processor(pid: i32) -> Option<i32> {
     let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = raw.rfind(')')?;
-    let rest = raw[close + 1..].trim_start();
-    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let (_, fields) = parse_stat(&raw)?;
     fields.get(36)?.parse().ok()
 }
 

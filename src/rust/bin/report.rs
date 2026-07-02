@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use qtools::style::{self, bold, dim, human_plain, paint};
 use qtools::{chart, donut, graphics};
 
-use crate::cluster::{Cluster, Metric};
+use crate::cluster::{metric_ordering, Cluster, Metric};
 
 /// Rendering knobs shared by `write_text`/`write_json`, mirroring dq's `FormatOptions`.
 pub struct ReportOpts {
@@ -19,12 +19,12 @@ pub struct ReportOpts {
     pub width: Option<usize>
 }
 
+use chart::{BAR_WIDTH, DONUT_PX, MIN_LABEL_WIDTH, RULE_WIDTH};
+
 const CPU_WIDTH: usize = 6;
 const MEM_WIDTH: usize = 8;
 const SWAP_WIDTH: usize = 8;
 const COUNT_WIDTH: usize = 4;
-const BAR_WIDTH: usize = 20;
-const RULE_WIDTH: usize = 52;
 // Fixed part of a row before the label: cpu + "  " + mem + "  " + count + "  " + bar + "  ".
 const ROW_PREFIX: usize = CPU_WIDTH + 2 + MEM_WIDTH + 2 + COUNT_WIDTH + 2 + BAR_WIDTH + 2;
 // Same, but with the swap column inserted right after mem: + "  " + swap.
@@ -34,9 +34,10 @@ const LEGEND_PREFIX: usize = 2 + 2 + CPU_WIDTH + 2 + MEM_WIDTH + 2 + COUNT_WIDTH
 // Two-tier legend row fixed part: swatch(2) + 2 + mem + 2 + swap + 2 + count + 2 before the label
 // (no cpu column: a two-tier donut is always memory outer / swap inner).
 const LEGEND_PREFIX_TWO_TIER: usize = 2 + 2 + MEM_WIDTH + 2 + SWAP_WIDTH + 2 + COUNT_WIDTH + 2;
-const MIN_LABEL_WIDTH: usize = 12;
-// Square pixel canvas the donut is rasterized into (viuer scales it to the cell box).
-const DONUT_PX: u32 = 600;
+// Fixed part of a `-v` member row before the label: "  " + cpu + "  " + mem + "  " + count + "  "
+// (member rows never render the bar column, unlike the cluster row above them).
+const MEMBER_PREFIX: usize = 2 + CPU_WIDTH + 2 + MEM_WIDTH + 2 + COUNT_WIDTH + 2;
+const MEMBER_PREFIX_SWAP: usize = MEMBER_PREFIX + SWAP_WIDTH + 2;
 // Idle/free capacity arc: darker than `style::OTHER_COLOR` (used-by-unshown-processes) so the two
 // gray remainders read as visually distinct in both the ring and the legend swatches.
 const UNUSED_COLOR: (u8, u8, u8) = (0x2f, 0x2f, 0x36);
@@ -88,7 +89,6 @@ pub fn write_text<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, me
 fn write_body<W: Write>(out: &mut W, clusters: &[Cluster], swap_used: u64, opts: &ReportOpts) -> io::Result<()> {
     let colors = opts.colors;
     let show_swap = swap_used > 0;
-    let row_prefix = if show_swap { ROW_PREFIX_SWAP } else { ROW_PREFIX };
 
     let top: Vec<&Cluster> = clusters.iter().take(opts.top).collect();
     let largest = top.iter().map(|c| active_value(c, opts.metric)).fold(0.0_f64, f64::max);
@@ -109,15 +109,12 @@ fn write_body<W: Write>(out: &mut W, clusters: &[Cluster], swap_used: u64, opts:
         write_cluster_row(out, c, largest, opts, show_swap)?;
         if opts.verbose && c.members.len() > 1 {
             let mut members = c.members.iter().collect::<Vec<_>>();
-            members.sort_by(|a, b| match opts.metric {
-                Metric::Cpu => b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal),
-                Metric::Memory => b.rss.cmp(&a.rss),
-                Metric::Swap => b.swap.cmp(&a.swap)
-            });
+            members.sort_by(|a, b| metric_ordering(opts.metric, a.cpu, a.rss, a.swap, b.cpu, b.rss, b.swap));
+            let member_prefix = if show_swap { MEMBER_PREFIX_SWAP } else { MEMBER_PREFIX };
             for m in members {
                 let label = format!("pid {}  {}", m.pid, m.cmd);
                 let label = match opts.width {
-                    Some(w) => style::truncate_middle(&label, w.saturating_sub(row_prefix + 2).max(MIN_LABEL_WIDTH)),
+                    Some(w) => style::truncate_middle(&label, w.saturating_sub(member_prefix).max(MIN_LABEL_WIDTH)),
                     None => label
                 };
                 if show_swap {
@@ -145,7 +142,7 @@ fn write_cluster_row<W: Write>(out: &mut W, c: &Cluster, largest: f64, opts: &Re
     let colors = opts.colors;
     let value = active_value(c, opts.metric);
     let bar_frac = if largest > 0.0 { value / largest } else { 0.0 };
-    let filled = ((bar_frac * BAR_WIDTH as f64).round() as usize).min(BAR_WIDTH);
+    let filled = chart::bar_fill(bar_frac, BAR_WIDTH);
 
     let row_prefix = if show_swap { ROW_PREFIX_SWAP } else { ROW_PREFIX };
     let cpu_cell = format!("{:>w$.0}%", c.cpu, w = CPU_WIDTH - 1);
@@ -633,7 +630,7 @@ mod tests {
     #[test]
     fn text_report_shows_header_and_cluster() {
         let clusters = vec![Cluster { identity: "gradle".into(), cpu: 30.0, rss: 3_000_000, swap: 0,
-            members: vec![Member { pid: 100, cpu: 10.0, rss: 1_000_000, swap: 0, cmd: "java ...".into() }] }];
+            members: vec![Member { pid: 100, cpu: 10.0, rss: 1_000_000, swap: 0, cmd: "java ...".into(), comm: "java".into() }] }];
         let mut buf = Vec::new();
         write_text(&mut buf, &clusters, 14_000_000, 31_000_000, 0, 0, 30.0, &opts()).unwrap();
         let s = String::from_utf8(buf).unwrap();
@@ -678,7 +675,7 @@ mod tests {
     #[test]
     fn json_report_includes_swap_for_a_swapping_cluster() {
         let clusters = vec![Cluster { identity: "gradle".into(), cpu: 30.0, rss: 3_000_000, swap: 2_000_000,
-            members: vec![Member { pid: 100, cpu: 30.0, rss: 3_000_000, swap: 2_000_000, cmd: "java ...".into() }] }];
+            members: vec![Member { pid: 100, cpu: 30.0, rss: 3_000_000, swap: 2_000_000, cmd: "java ...".into(), comm: "java".into() }] }];
         let mut buf = Vec::new();
         write_json(&mut buf, &clusters, 14_000_000, 31_000_000, 2_000_000, 8_000_000_000, 30.0, &opts()).unwrap();
         let s = String::from_utf8(buf).unwrap();

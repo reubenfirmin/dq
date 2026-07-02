@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
 
-use qtools::{donut, graphics, style};
+use qtools::{chart, donut, graphics, style};
 
 use donut::{build_donut_image, build_two_donut_image};
-use style::{bold, color_swatch, dim, human_plain, json_escape, magnitude_color, pad_visible, paint, size_text, truncate_middle, OTHER_COLOR, PALETTE};
+use style::{bold, color_swatch, dim, human_plain, json_escape, magnitude_color, pad_visible, paint, size_text, truncate_middle};
 
 pub struct FormatOptions {
     pub json: bool,
@@ -18,17 +18,13 @@ pub struct FormatOptions {
 }
 
 const SIZE_WIDTH: usize = 8;
-const BAR_WIDTH: usize = 20;
-const RULE_WIDTH: usize = 52;
+use chart::{BAR_WIDTH, DONUT_PX, MIN_LABEL_WIDTH, RULE_WIDTH};
 // Fixed part of a text row: size + "  " + "100%" + "  " + bar + "  " before the label.
 const ROW_PREFIX: usize = SIZE_WIDTH + 2 + 4 + 2 + BAR_WIDTH + 2;
 // Legend row fixed part: swatch(2) + 2 + size + 2 + "100%"(4) + 2 before the label.
 const LEGEND_PREFIX: usize = 2 + 2 + SIZE_WIDTH + 2 + 4 + 2;
-const MIN_LABEL_WIDTH: usize = 12;
 // How many "in this dir" files to list before summarizing the rest (text mode).
 const LOOSE_LIMIT: usize = 12;
-// Square pixel canvas one (stacked) donut is rasterized into (viuer scales it to the cell box).
-const DONUT_PX: u32 = 600;
 // Minimum terminal width to place the folder and file donuts side by side.
 const SIDE_BY_SIDE_MIN: usize = 88;
 // Two-column layout: total width cap, the gap (cells) between columns, and image pixels per
@@ -36,13 +32,6 @@ const SIDE_BY_SIDE_MIN: usize = 88;
 const MAX_BAND: usize = 96;
 const COLUMN_GAP: usize = 8;
 const DONUT_UNIT_PX: u32 = 14;
-
-/// A directory or file entry as it appears in a chart legend.
-struct LegendEntry {
-    color: (u8, u8, u8),
-    size: u64,
-    label: String
-}
 
 /// Human-readable size (e.g. "1.23M") with no ANSI, for the progress indicator.
 pub fn human_size(size: u64) -> String {
@@ -160,7 +149,7 @@ fn draw_two_columns(out: &mut dyn Write, dir: &str, rows: &[(&String, u64)], loo
 
     // One combined image so the two donuts stay aligned and share the divider.
     out.flush()?;
-    let image = build_two_donut_image(&slices_from_legend(&folder_legend), &slices_from_legend(&files_legend), col as u32, gap as u32, DONUT_UNIT_PX);
+    let image = build_two_donut_image(&chart::slices(&folder_legend), &chart::slices(&files_legend), col as u32, gap as u32, DONUT_UNIT_PX);
     let config = viuer::Config {
         absolute_offset: false,
         // Match the text columns exactly (2*col + gap) so the divider lines up through everything.
@@ -184,8 +173,8 @@ fn draw_two_columns(out: &mut dyn Write, dir: &str, rows: &[(&String, u64)], loo
  * Draw one donut plus its legend. Returns false (having drawn nothing) if the image failed, so the
  * caller can fall back to text rows.
  */
-fn draw_donut_block(out: &mut dyn Write, legend: &[LegendEntry], total: u64, options: &FormatOptions) -> io::Result<bool> {
-    let slices = slices_from_legend(legend);
+fn draw_donut_block(out: &mut dyn Write, legend: &[chart::Segment], total: u64, options: &FormatOptions) -> io::Result<bool> {
+    let slices = chart::slices(legend);
     if slices.is_empty() {
         return Ok(false);
     }
@@ -215,54 +204,22 @@ fn draw_donut_block(out: &mut dyn Write, legend: &[LegendEntry], total: u64, opt
  * The top folders as legend entries (distinct palette colors), plus one "other" entry for the rest
  * of the tree so the arcs sum to the whole. Percentages will be shares of the grand total.
  */
-fn build_folder_legend(dir: &str, rows: &[(&String, u64)], full_size: u64) -> Vec<LegendEntry> {
-    let visible: Vec<&(&String, u64)> = rows.iter().filter(|(_, size)| *size > 0).collect();
-    let k = visible.len().min(PALETTE.len());
-
-    let mut legend: Vec<LegendEntry> = Vec::new();
-    let mut shown = 0u64;
-    for i in 0..k {
-        let (path, size) = visible[i];
-        legend.push(LegendEntry { color: PALETTE[i], size: *size, label: relativize(dir, path) });
-        shown += *size;
-    }
-
-    // "Other" completes the ring to the grand total (the rest of the tree, including loose files).
-    let other = full_size.saturating_sub(shown);
-    if other > 0 {
-        legend.push(LegendEntry { color: OTHER_COLOR, size: other, label: "other".to_string() });
-    }
-    legend
+fn build_folder_legend(dir: &str, rows: &[(&String, u64)], full_size: u64) -> Vec<chart::Segment> {
+    let items: Vec<(String, u64)> = rows.iter().map(|(path, size)| (relativize(dir, path), *size)).collect();
+    chart::segments(&items, full_size, style::PALETTE.len())
 }
 
 /**
  * The biggest files sitting directly in the scanned dir as legend entries, with the remainder folded
  * into one "other" entry. Percentages will be shares of the in-this-dir total.
  */
-fn build_files_legend(files: &[(String, u64)]) -> Vec<LegendEntry> {
-    let visible: Vec<&(String, u64)> = files.iter().filter(|(_, size)| *size > 0).collect();
-    let k = visible.len().min(PALETTE.len());
-
-    let mut legend: Vec<LegendEntry> = Vec::new();
-    for i in 0..k {
-        let (name, size) = visible[i];
-        legend.push(LegendEntry { color: PALETTE[i], size: *size, label: name.clone() });
-    }
-
-    let other_count = visible.len() - k;
-    let other_sum: u64 = visible[k..].iter().map(|(_, size)| *size).sum();
-    if other_sum > 0 {
-        legend.push(LegendEntry { color: OTHER_COLOR, size: other_sum, label: format!("{} smaller files", other_count) });
-    }
-    legend
-}
-
-fn slices_from_legend(legend: &[LegendEntry]) -> Vec<donut::Slice> {
-    legend.iter().map(|e| (e.size, e.color)).collect()
+fn build_files_legend(files: &[(String, u64)]) -> Vec<chart::Segment> {
+    let total: u64 = files.iter().map(|(_, size)| *size).sum();
+    chart::segments_labeled(files, total, style::PALETTE.len(), |n| format!("{} smaller files", n))
 }
 
 /// A single-column color-keyed legend: swatch, size, share of `total`, and the (truncated) label.
-fn write_legend(out: &mut dyn Write, legend: &[LegendEntry], total: u64, options: &FormatOptions) -> io::Result<()> {
+fn write_legend(out: &mut dyn Write, legend: &[chart::Segment], total: u64, options: &FormatOptions) -> io::Result<()> {
     let label_w = options.width.map(|w| w.saturating_sub(LEGEND_PREFIX).max(MIN_LABEL_WIDTH));
     for entry in legend {
         writeln!(out, "{}", legend_cell(entry, total, options, label_w, false))?;
@@ -271,7 +228,7 @@ fn write_legend(out: &mut dyn Write, legend: &[LegendEntry], total: u64, options
 }
 
 /// Two color-keyed legends side by side, each column `col` cells wide with a `gap` between them.
-fn write_two_legends(out: &mut dyn Write, left: &[LegendEntry], left_total: u64, right: &[LegendEntry], right_total: u64, col: usize, gap: usize, options: &FormatOptions) -> io::Result<()> {
+fn write_two_legends(out: &mut dyn Write, left: &[chart::Segment], left_total: u64, right: &[chart::Segment], right_total: u64, col: usize, gap: usize, options: &FormatOptions) -> io::Result<()> {
     let label_w = Some(col.saturating_sub(LEGEND_PREFIX).max(MIN_LABEL_WIDTH));
     let divider = " ".repeat(gap);
     let n = left.len().max(right.len());
@@ -290,9 +247,9 @@ fn write_two_legends(out: &mut dyn Write, left: &[LegendEntry], left_total: u64,
 }
 
 /// One legend row. `label_w` caps (and, when `pad`, space-fills) the label so two-column rows align.
-fn legend_cell(entry: &LegendEntry, total: u64, options: &FormatOptions, label_w: Option<usize>, pad: bool) -> String {
-    let size_cell = paint(&format!("{:>width$}", human_plain(entry.size), width = SIZE_WIDTH), magnitude_color(entry.size), entry.size >= 1_000_000_000, options.colors);
-    let pct_cell = dim(&format!("{:>3}%", percent_round(entry.size, total)), options.colors);
+fn legend_cell(entry: &chart::Segment, total: u64, options: &FormatOptions, label_w: Option<usize>, pad: bool) -> String {
+    let size_cell = paint(&format!("{:>width$}", human_plain(entry.value), width = SIZE_WIDTH), magnitude_color(entry.value), entry.value >= 1_000_000_000, options.colors);
+    let pct_cell = dim(&format!("{:>3}%", percent_round(entry.value, total)), options.colors);
     let label = match label_w {
         Some(w) if pad => format!("{:<w$}", truncate_middle(&entry.label, w)),
         Some(w) => truncate_middle(&entry.label, w),
@@ -363,7 +320,7 @@ fn write_entry(out: &mut dyn Write, label: &str, size: u64, total: u64, largest:
     let size_cell = paint(&cell, magnitude_color(size), size >= 1_000_000_000, options.colors);
     let pct_cell = dim(&format!("{:>3}%", percent_round(size, total)), options.colors);
 
-    let filled = ((bar_frac * BAR_WIDTH as f64).round() as usize).min(BAR_WIDTH);
+    let filled = chart::bar_fill(bar_frac, BAR_WIDTH);
     let bar_filled = paint(&"█".repeat(filled), magnitude_color(size), false, options.colors);
     let bar_empty = dim(&"░".repeat(BAR_WIDTH - filled), options.colors);
 
@@ -439,7 +396,7 @@ mod tests {
         let rows: Vec<(&String, u64)> =
             names.iter().enumerate().map(|(i, n)| (n, 1000 - i as u64 * 10)).collect();
         let legend = build_folder_legend("root", &rows, 20_000);
-        assert_eq!(legend.len(), PALETTE.len() + 1);
+        assert_eq!(legend.len(), style::PALETTE.len() + 1);
         assert_eq!(legend.last().unwrap().label, "other");
     }
 
@@ -447,7 +404,7 @@ mod tests {
     fn files_legend_aggregates_overflow() {
         let files: Vec<(String, u64)> = (0..20).map(|i| (format!("f{i}"), 100 - i as u64)).collect();
         let legend = build_files_legend(&files);
-        assert_eq!(legend.len(), PALETTE.len() + 1);
+        assert_eq!(legend.len(), style::PALETTE.len() + 1);
         assert!(legend.last().unwrap().label.contains("smaller files"));
         assert!(build_files_legend(&[]).is_empty());
     }

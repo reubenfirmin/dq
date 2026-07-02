@@ -13,7 +13,7 @@ use crate::term::{save_tty_mode, restore_tty_mode, drain_input, set_noecho};
  * restore the tty mode afterwards in case a timed-out probe left it raw.
  */
 pub fn supported() -> bool {
-    let debug = std::env::var_os("DQ_DEBUG").is_some();
+    let debug = std::env::var_os("QTOOLS_DEBUG").is_some();
     let saved = save_tty_mode();
     // Suppress echo for the whole probe window: viuer restores the terminal to cooked/echo between
     // its reads, so a late query reply (e.g. the DA1 hang-guard fallback) would otherwise echo to the
@@ -53,22 +53,29 @@ pub fn supported() -> bool {
                     viuer::KittySupport::Local => "local",
                     viuer::KittySupport::Remote => "remote"
                 };
-                eprintln!("dq[debug]: kitty={} iterm={} sixel={} -> {}", kitty, iterm, sixel, supported);
+                eprintln!("{}[debug]: kitty={} iterm={} sixel={} -> {}", prog_name(), kitty, iterm, sixel, supported);
             }
             supported
         }
         Err(_) => {
             if debug {
-                eprintln!("dq[debug]: capability probe timed out (>1500ms); terminal never replied");
+                eprintln!("{}[debug]: capability probe timed out (>1500ms); terminal never replied", prog_name());
             }
             false
         }
     }
 }
 
-/// Log a viuer render failure to stderr when `DQ_DEBUG` is set, so a failed draw isn't silent.
+/// Log a viuer render failure to stderr when `QTOOLS_DEBUG` is set, so a failed draw isn't silent.
 pub fn debug_print_failure(e: &viuer::ViuError) {
-    if std::env::var_os("DQ_DEBUG").is_some() {
-        eprintln!("dq[debug]: viuer::print failed: {e}");
+    if std::env::var_os("QTOOLS_DEBUG").is_some() {
+        eprintln!("{}[debug]: viuer::print failed: {e}", prog_name());
     }
+}
+
+/// The running binary's name (e.g. "dq" or "pq"), for debug messages from this shared module.
+fn prog_name() -> String {
+    std::env::args().next()
+        .and_then(|p| std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "qtools".to_string())
 }

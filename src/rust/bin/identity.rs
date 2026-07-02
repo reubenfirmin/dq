@@ -162,6 +162,15 @@ fn is_flag(tok: &str) -> bool {
     tok.starts_with('-')
 }
 
+/// A `NAME=value` assignment token, as `env` accepts before the wrapped command (e.g.
+/// `env JAVA_OPTS=-Xmx2g java -jar app.jar`).
+fn is_assignment(tok: &str) -> bool {
+    match tok.find('=') {
+        Some(pos) if pos > 0 => tok[..pos].chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        _ => false
+    }
+}
+
 /// A duration-like positional (e.g. `30`, `30s`, `5m`): all ASCII digits, optionally followed by a
 /// single unit char in `smhd`. Used to skip the numeric arg some wrappers (`timeout 30 cmd`,
 /// `nice 10 cmd`) place before the wrapped command.
@@ -182,10 +191,10 @@ fn strip_wrappers(cmdline: &[String]) -> Vec<String> {
         if !is_wrapper(&exe) {
             break;
         }
-        // Skip the wrapper itself, then any flags, stopping at the first non-flag token, which is
-        // the wrapped command.
+        // Skip the wrapper itself, then any flags or `NAME=value` assignments (as `env` accepts),
+        // stopping at the first other token, which is the wrapped command.
         i += 1;
-        while i < cmdline.len() && is_flag(&cmdline[i]) {
+        while i < cmdline.len() && (is_flag(&cmdline[i]) || is_assignment(&cmdline[i])) {
             i += 1;
         }
     }
@@ -312,5 +321,9 @@ mod tests {
     #[test] fn timeout_wrapper_skips_duration() {
         assert_eq!(resolve("timeout", &v(&["timeout","30","java","-jar","/opt/foo.jar"])), "foo");
         assert_eq!(resolve("nice", &v(&["nice","10","postgres","-D","/data"])), "postgres");
+    }
+    #[test] fn env_wrapper_skips_assignments() {
+        assert_eq!(resolve("env", &v(&["env","JAVA_OPTS=-Xmx2g","java","-jar","/opt/foo.jar"])), "foo");
+        assert_eq!(resolve("env", &v(&["env","A=1","B=2","nginx","-g","daemon off;"])), "nginx");
     }
 }

@@ -70,18 +70,23 @@ fn main() {
     let attribution = proc::per_core_attribution(&procs);
 
     let mut clusters = cluster::cluster(&procs, metric);
+    // System-wide, computed before any pattern filter: the header's cpu% is a system total, matching
+    // the mem/swap totals beside it (which are always system-wide), so a filtered report never shows
+    // a small filtered cpu% next to unfiltered mem/swap.
+    let cpu_total: f64 = clusters.iter().map(|c| c.cpu).sum();
 
     if let Some(pattern) = &args.pattern {
         let needle = pattern.to_lowercase();
         clusters.retain(|c| {
             c.identity.to_lowercase().contains(&needle)
-                || c.members.iter().any(|m| m.cmd.to_lowercase().contains(&needle))
+                || c.members.iter().any(|m| {
+                    m.cmd.to_lowercase().contains(&needle) || m.comm.to_lowercase().contains(&needle)
+                })
         });
     }
 
     let (mem_used, mem_total) = proc::mem_info();
     let (swap_used, swap_total) = proc::swap_info();
-    let cpu_total: f64 = clusters.iter().map(|c| c.cpu).sum();
 
     // Colors/width are only meaningful on an interactive terminal; JSON and piped output stay plain.
     let interactive = std::io::stdout().is_terminal() && !args.json;

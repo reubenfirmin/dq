@@ -14,7 +14,8 @@ pub struct Member {
     pub cpu: f64,
     pub rss: u64,
     pub swap: u64,
-    pub cmd: String
+    pub cmd: String,
+    pub comm: String
 }
 
 /// A group of processes sharing an effective identity.
@@ -50,19 +51,25 @@ pub fn cluster(procs: &[proc::Proc], metric: Metric) -> Vec<Cluster> {
         entry.0 += p.cpu_pct;
         entry.1 += p.rss;
         entry.2 += p.swap;
-        entry.3.push(Member { pid: p.pid, cpu: p.cpu_pct, rss: p.rss, swap: p.swap, cmd: p.cmdline.join(" ") });
+        entry.3.push(Member { pid: p.pid, cpu: p.cpu_pct, rss: p.rss, swap: p.swap, cmd: p.cmdline.join(" "), comm: p.comm.clone() });
     }
 
     let mut clusters: Vec<Cluster> = groups.into_iter()
         .map(|(identity, (cpu, rss, swap, members))| Cluster { identity, cpu, rss, swap, members })
         .collect();
 
-    clusters.sort_by(|a, b| match metric {
-        Metric::Cpu => b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal),
-        Metric::Memory => b.rss.cmp(&a.rss),
-        Metric::Swap => b.swap.cmp(&a.swap)
-    });
+    clusters.sort_by(|a, b| metric_ordering(metric, a.cpu, a.rss, a.swap, b.cpu, b.rss, b.swap));
     clusters
+}
+
+/// Descending ordering by the active metric's cpu/rss/swap value - shared by cluster ranking and
+/// the `-v` member listing, so both sort consistently.
+pub fn metric_ordering(metric: Metric, cpu_a: f64, rss_a: u64, swap_a: u64, cpu_b: f64, rss_b: u64, swap_b: u64) -> std::cmp::Ordering {
+    match metric {
+        Metric::Cpu => cpu_b.partial_cmp(&cpu_a).unwrap_or(std::cmp::Ordering::Equal),
+        Metric::Memory => rss_b.cmp(&rss_a),
+        Metric::Swap => swap_b.cmp(&swap_a)
+    }
 }
 
 /// Compute (and memoize) `pid`'s effective identity: its own identity, unless that identity is a

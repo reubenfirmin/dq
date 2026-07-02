@@ -86,7 +86,7 @@ fn main() {
     // Query the terminal for a graphics protocol (kitty / iTerm2 / sixel). Only when interactive,
     // since detection writes escape queries and reads the replies. Falls back to text when absent.
     let graphics = interactive && qtools::graphics::supported();
-    if std::env::var_os("DQ_DEBUG").is_some() {
+    if std::env::var_os("QTOOLS_DEBUG").is_some() {
         eprintln!("dq[debug]: interactive={} graphics={}", interactive, graphics);
     }
 
