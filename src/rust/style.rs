@@ -3,12 +3,12 @@
 
 // Distinct tile/arc colors (a Tableau-style palette) with matching legend swatches; the overflow
 // "other" slice uses OTHER_COLOR.
-pub(crate) const PALETTE: [(u8, u8, u8); 12] = [
+pub const PALETTE: [(u8, u8, u8); 12] = [
     (0x4e, 0x79, 0xa7), (0xf2, 0x8e, 0x2b), (0x59, 0xa1, 0x4f), (0xe1, 0x57, 0x59),
     (0x76, 0xb7, 0xb2), (0xed, 0xc9, 0x48), (0xb0, 0x7a, 0xa1), (0xff, 0x9d, 0xa7),
     (0x9c, 0x75, 0x5f), (0x86, 0xbc, 0xb6), (0xd4, 0xa6, 0xc8), (0x79, 0x9d, 0xd5),
 ];
-pub(crate) const OTHER_COLOR: (u8, u8, u8) = (0x60, 0x60, 0x66);
+pub const OTHER_COLOR: (u8, u8, u8) = (0x60, 0x60, 0x66);
 
 // ANSI foreground codes used by the size heat-map.
 const RED: i32 = 31;
@@ -17,7 +17,7 @@ const YELLOW: i32 = 33;
 const CYAN: i32 = 36;
 
 /// Human-readable size, e.g. "1.23M", with no ANSI.
-pub(crate) fn human_plain(size: u64) -> String {
+pub fn human_plain(size: u64) -> String {
     match size {
         s if s >= 1_000_000_000 => format!("{}G", round2(size, 1_000_000_000)),
         s if s >= 1_000_000 => format!("{}M", round2(size, 1_000_000)),
@@ -31,12 +31,12 @@ fn round2(size: u64, divisor: u64) -> f64 {
 }
 
 /// A magnitude-colored size, for the header totals.
-pub(crate) fn size_text(size: u64, colors: bool) -> String {
+pub fn size_text(size: u64, colors: bool) -> String {
     paint(&human_plain(size), magnitude_color(size), size >= 1_000_000_000, colors)
 }
 
 /// Heat-map a size: red (huge) -> yellow -> green -> cyan (small).
-pub(crate) fn magnitude_color(size: u64) -> i32 {
+pub fn magnitude_color(size: u64) -> i32 {
     match size {
         s if s >= 1_000_000_000 => RED,
         s if s >= 1_000_000 => YELLOW,
@@ -45,7 +45,7 @@ pub(crate) fn magnitude_color(size: u64) -> i32 {
     }
 }
 
-pub(crate) fn paint(s: &str, color: i32, bold: bool, colors: bool) -> String {
+pub fn paint(s: &str, color: i32, bold: bool, colors: bool) -> String {
     if !colors {
         return s.to_string();
     }
@@ -53,7 +53,7 @@ pub(crate) fn paint(s: &str, color: i32, bold: bool, colors: bool) -> String {
     format!("{}\x1B[{}m{}\x1B[0m", weight, color, s)
 }
 
-pub(crate) fn bold(s: &str, colors: bool) -> String {
+pub fn bold(s: &str, colors: bool) -> String {
     if colors {
         format!("\x1B[1m{}\x1B[0m", s)
     } else {
@@ -61,7 +61,7 @@ pub(crate) fn bold(s: &str, colors: bool) -> String {
     }
 }
 
-pub(crate) fn dim(s: &str, colors: bool) -> String {
+pub fn dim(s: &str, colors: bool) -> String {
     if colors {
         format!("\x1B[2m{}\x1B[0m", s)
     } else {
@@ -69,7 +69,7 @@ pub(crate) fn dim(s: &str, colors: bool) -> String {
     }
 }
 
-pub(crate) fn color_swatch(color: (u8, u8, u8), colors: bool) -> String {
+pub fn color_swatch(color: (u8, u8, u8), colors: bool) -> String {
     if colors {
         format!("\x1B[38;2;{};{};{}m██\x1B[0m", color.0, color.1, color.2)
     } else {
@@ -78,7 +78,7 @@ pub(crate) fn color_swatch(color: (u8, u8, u8), colors: bool) -> String {
 }
 
 /// Shorten a string to `max` characters by eliding the middle, keeping both ends visible.
-pub(crate) fn truncate_middle(s: &str, max: usize) -> String {
+pub fn truncate_middle(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max {
         return s.to_string();
@@ -96,12 +96,29 @@ pub(crate) fn truncate_middle(s: &str, max: usize) -> String {
 
 /// Append spaces to a colored string so its visible width reaches `width` (a format specifier can't
 /// do this because it would count the ANSI bytes).
-pub(crate) fn pad_visible(colored: &str, visible: usize, width: usize) -> String {
+pub fn pad_visible(colored: &str, visible: usize, width: usize) -> String {
     if visible >= width {
         colored.to_string()
     } else {
         format!("{}{}", colored, " ".repeat(width - visible))
     }
+}
+
+/// Escape a string for embedding in a JSON string literal (shared by dq's and pq's `--json` output).
+pub fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c)
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -149,5 +166,12 @@ mod tests {
     fn pad_visible_reaches_target_width() {
         assert_eq!(pad_visible("abc", 3, 6), "abc   ");
         assert_eq!(pad_visible("abc", 3, 3), "abc"); // already wide enough
+    }
+
+    #[test]
+    fn json_escape_handles_specials() {
+        assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+        assert_eq!(json_escape("tab\tnl\n"), "tab\\tnl\\n");
+        assert_eq!(json_escape("\u{1}"), "\\u0001");
     }
 }

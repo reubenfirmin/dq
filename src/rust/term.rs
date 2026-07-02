@@ -66,3 +66,23 @@ pub fn restore_tty_mode(mode: &TtyMode) {
         libc::tcsetattr(mode.file.as_raw_fd(), libc::TCSANOW, &mode.termios);
     }
 }
+
+/// Discard any pending terminal input on the controlling terminal. Used to throw away leftover
+/// capability-query replies (e.g. a DA1 `ESC[?...c`) that a probe didn't consume, before they echo
+/// onto the screen once the terminal is back in cooked/echo mode.
+pub fn drain_input(mode: &TtyMode) {
+    unsafe {
+        libc::tcflush(mode.file.as_raw_fd(), libc::TCIFLUSH);
+    }
+}
+
+/// Turn off echo and canonical mode on the terminal (keeping every other flag from `mode`). Held for
+/// the whole capability-probe window so a query reply that arrives cannot echo onto the screen; the
+/// original mode is put back with `restore_tty_mode` afterwards.
+pub fn set_noecho(mode: &TtyMode) {
+    let mut raw = mode.termios;
+    raw.c_lflag &= !(libc::ECHO | libc::ICANON);
+    unsafe {
+        libc::tcsetattr(mode.file.as_raw_fd(), libc::TCSANOW, &raw);
+    }
+}

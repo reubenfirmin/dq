@@ -13,19 +13,36 @@ const SS: usize = 4;
 /// The dim divider drawn down the gap between the two side-by-side donuts.
 const DIVIDER_COLOR: [u8; 4] = [90, 90, 96, 255];
 
-pub(crate) type Slice = (u64, (u8, u8, u8));
+pub type Slice = (u64, (u8, u8, u8));
 
 /// A single donut on a transparent square canvas, so it floats on the terminal's own background.
-pub(crate) fn build_donut_image(slices: &[Slice], w: u32) -> image::DynamicImage {
+pub fn build_donut_image(slices: &[Slice], w: u32) -> image::DynamicImage {
     let mut img = image::RgbaImage::from_pixel(w, w, image::Rgba([0, 0, 0, 0]));
     let c = w as f64 / 2.0;
     draw_donut(&mut img, slices, c, c, w as f64 * OUTER_RADIUS, w as f64 * INNER_RADIUS);
     image::DynamicImage::ImageRgba8(img)
 }
 
+/// Radius bands (as a fraction of the square's width) for the two concentric rings of
+/// `build_two_ring_image`: a visible gap separates the outer band from the inner one.
+const RING_OUTER: (f64, f64) = (0.34, 0.47);
+const RING_INNER: (f64, f64) = (0.17, 0.30);
+
+/// Two concentric donuts sharing one center on a transparent square canvas: an outer ring in the
+/// `RING_OUTER` radius band and an inner ring in the `RING_INNER` band, with a visible gap between
+/// them. Used by pq to show two related metrics (e.g. memory outer, swap inner) on one glyph.
+pub fn build_two_ring_image(outer: &[Slice], inner: &[Slice], w: u32) -> image::DynamicImage {
+    let mut img = image::RgbaImage::from_pixel(w, w, image::Rgba([0, 0, 0, 0]));
+    let c = w as f64 / 2.0;
+    let wf = w as f64;
+    draw_donut(&mut img, outer, c, c, wf * RING_OUTER.1, wf * RING_OUTER.0);
+    draw_donut(&mut img, inner, c, c, wf * RING_INNER.1, wf * RING_INNER.0);
+    image::DynamicImage::ImageRgba8(img)
+}
+
 /// Two donuts side by side on one transparent canvas (`col` cells wide each, `gap` cells apart, at
 /// `unit` pixels per cell), so they print with a single call and share a divider.
-pub(crate) fn build_two_donut_image(left: &[Slice], right: &[Slice], col: u32, gap: u32, unit: u32) -> image::DynamicImage {
+pub fn build_two_donut_image(left: &[Slice], right: &[Slice], col: u32, gap: u32, unit: u32) -> image::DynamicImage {
     let band = 2 * col + gap;
     let w = band * unit;
     let h = col * unit;
@@ -51,6 +68,49 @@ pub(crate) fn build_two_donut_image(left: &[Slice], right: &[Slice], col: u32, g
     }
 
     image::DynamicImage::ImageRgba8(img)
+}
+
+/// One concentric ring per CPU core, each showing that core's utilization broken down by whichever
+/// process(es) are actually running on it: ring 0 (outermost) is core 0, working inward. Rings share
+/// a radial band from `w*0.16` (innermost edge) to `w*0.47` (outermost edge), split evenly by core
+/// count with a small gap between adjacent rings so they stay visually distinct even as they thin
+/// out at high core counts.
+///
+/// `rings[i]` is the full slice list for core i, already colored by the caller (process colors
+/// matching the report's legend, plus "other"/"idle" remainders) via `draw_donut`; each ring's own
+/// slice values don't need to sum to any particular constant, since `draw_donut` normalizes by
+/// whatever total it's given, but callers should keep every ring's total proportional to the same
+/// 100%-of-that-core scale (e.g. hundredths of a percent) so the arcs read consistently core to core.
+pub fn build_core_rings_image(rings: &[Vec<Slice>], w: u32) -> image::DynamicImage {
+    let mut img = image::RgbaImage::from_pixel(w, w, image::Rgba([0, 0, 0, 0]));
+    let c = w as f64 / 2.0;
+    let wf = w as f64;
+    let outer = wf * 0.47;
+    let inner = wf * 0.16;
+    let n = rings.len().max(1);
+    let thickness = (outer - inner) / n as f64;
+    let gap = (thickness * 0.18).min(2.5);
+
+    for (i, slices) in rings.iter().enumerate() {
+        let r_out = outer - i as f64 * thickness;
+        let r_in = (r_out - thickness + gap).max(inner);
+        draw_donut(&mut img, slices, c, c, r_out, r_in);
+    }
+
+    image::DynamicImage::ImageRgba8(img)
+}
+
+/// Green (idle) -> yellow (busy) -> red (saturated) heat color for a core's load percentage,
+/// piecewise-linear over 0%/50%/100%. Used by `report`'s fallback rendering when per-process
+/// attribution isn't available, so the rings still convey load even without process colors.
+pub fn heat(load: f64) -> (u8, u8, u8) {
+    const LOW: (u8, u8, u8) = (0x59, 0xa1, 0x4f);
+    const MID: (u8, u8, u8) = (0xe0, 0xc5, 0x41);
+    const HIGH: (u8, u8, u8) = (0xe1, 0x57, 0x59);
+    let t = load.clamp(0.0, 100.0);
+    let (from, to, frac) = if t <= 50.0 { (LOW, MID, t / 50.0) } else { (MID, HIGH, (t - 50.0) / 50.0) };
+    let lerp = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * frac).round() as u8;
+    (lerp(from.0, to.0), lerp(from.1, to.1), lerp(from.2, to.2))
 }
 
 /// Rasterize one donut centered at (cx, cy) into an existing image.
@@ -160,5 +220,45 @@ mod tests {
     fn empty_and_zero_slices_are_safe() {
         assert_eq!(build_donut_image(&[], 100).dimensions(), (100, 100));
         assert_eq!(build_donut_image(&[(0, (0, 0, 0))], 100).dimensions(), (100, 100));
+    }
+
+    #[test]
+    fn two_ring_image_has_expected_dimensions() {
+        let slices: Vec<Slice> = vec![(50, (1, 2, 3)), (30, (4, 5, 6)), (20, (7, 8, 9))];
+        assert_eq!(build_two_ring_image(&slices, &slices, 200).dimensions(), (200, 200));
+    }
+
+    #[test]
+    fn two_ring_image_handles_empty_and_zero_slices_without_panicking() {
+        assert_eq!(build_two_ring_image(&[], &[], 100).dimensions(), (100, 100));
+        assert_eq!(build_two_ring_image(&[(0, (0, 0, 0))], &[(0, (0, 0, 0))], 100).dimensions(), (100, 100));
+    }
+
+    #[test]
+    fn core_rings_image_has_expected_dimensions_and_never_panics() {
+        for n in [0usize, 1, 16, 64] {
+            let rings: Vec<Vec<Slice>> = (0..n).map(|i| {
+                let load = (i * 7 % 101) as f64;
+                let busy = (load * 100.0).round() as u64;
+                let idle = 10_000u64.saturating_sub(busy);
+                vec![(busy, heat(load)), (idle, (0x2f, 0x2f, 0x36))]
+            }).collect();
+            assert_eq!(build_core_rings_image(&rings, 200).dimensions(), (200, 200));
+        }
+    }
+
+    #[test]
+    fn core_rings_image_handles_empty_slices_per_ring() {
+        // A ring with no slices at all (e.g. a core with zero attribution and zero load) must not
+        // panic; draw_donut's total==0 short-circuit covers it.
+        let rings: Vec<Vec<Slice>> = vec![vec![], vec![(50, (1, 2, 3))], vec![(0, (0, 0, 0))]];
+        assert_eq!(build_core_rings_image(&rings, 100).dimensions(), (100, 100));
+    }
+
+    #[test]
+    fn heat_interpolates_green_to_yellow_to_red() {
+        assert_eq!(heat(0.0), (0x59, 0xa1, 0x4f));
+        assert_eq!(heat(50.0), (0xe0, 0xc5, 0x41));
+        assert_eq!(heat(100.0), (0xe1, 0x57, 0x59));
     }
 }

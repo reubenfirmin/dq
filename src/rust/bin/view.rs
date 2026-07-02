@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
 
-mod donut;
-mod style;
+use qtools::{donut, graphics, style};
 
 use donut::{build_donut_image, build_two_donut_image};
-use style::{bold, color_swatch, dim, human_plain, magnitude_color, pad_visible, paint, size_text, truncate_middle, OTHER_COLOR, PALETTE};
+use style::{bold, color_swatch, dim, human_plain, json_escape, magnitude_color, pad_visible, paint, size_text, truncate_middle, OTHER_COLOR, PALETTE};
 
 pub struct FormatOptions {
     pub json: bool,
@@ -171,7 +170,7 @@ fn draw_two_columns(out: &mut dyn Write, dir: &str, rows: &[(&String, u64)], loo
     };
 
     if let Err(e) = viuer::print(&image, &config) {
-        debug_print_failure(&e);
+        graphics::debug_print_failure(&e);
         write_folder_rows(out, dir, rows, full_size, options)?;
         writeln!(out)?;
         writeln!(out, "{}", dim("in this dir:", colors))?;
@@ -201,17 +200,11 @@ fn draw_donut_block(out: &mut dyn Write, legend: &[LegendEntry], total: u64, opt
     };
 
     if let Err(e) = viuer::print(&image, &config) {
-        debug_print_failure(&e);
+        graphics::debug_print_failure(&e);
         return Ok(false);
     }
     write_legend(out, legend, total, options)?;
     Ok(true)
-}
-
-fn debug_print_failure(e: &viuer::ViuError) {
-    if std::env::var_os("DQ_DEBUG").is_some() {
-        eprintln!("dq[debug]: viuer::print failed: {e}");
-    }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -436,22 +429,6 @@ fn relativize(dir: &str, path: &str) -> String {
     path.strip_prefix(&prefix).unwrap_or(path).to_string()
 }
 
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c)
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,13 +459,6 @@ mod tests {
         assert_eq!(relativize(".", "./target/deps"), "target/deps");
         // Unrelated path is left as-is.
         assert_eq!(relativize("/usr", "/etc/hosts"), "/etc/hosts");
-    }
-
-    #[test]
-    fn json_escape_handles_specials() {
-        assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
-        assert_eq!(json_escape("tab\tnl\n"), "tab\\tnl\\n");
-        assert_eq!(json_escape("\u{1}"), "\\u0001");
     }
 
     #[test]

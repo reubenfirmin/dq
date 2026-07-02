@@ -1,5 +1,5 @@
 [package]
-name = "dq"
+name = "qtools"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,7 +10,15 @@ viuer = { version = "0.11", default-features = false, features = ["icy_sixel"] }
 image = { version = "0.25", default-features = false }
 libc = "0.2"
 
+[lib]
+name = "qtools"
+path = "src/rust/lib.rs"
+
 [[bin]]
 name = "dq"
-path = "src/rust/main.rs"
+path = "src/rust/bin/dq.rs"
+
+[[bin]]
+name = "pq"
+path = "src/rust/bin/pq.rs"
 

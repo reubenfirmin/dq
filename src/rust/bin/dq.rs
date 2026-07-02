@@ -1,6 +1,6 @@
 mod view;
 mod progress;
-mod term;
+use qtools::term;
 
 use std::error::Error;
 use std::fs;
@@ -85,7 +85,7 @@ fn main() {
 
     // Query the terminal for a graphics protocol (kitty / iTerm2 / sixel). Only when interactive,
     // since detection writes escape queries and reads the replies. Falls back to text when absent.
-    let graphics = interactive && graphics_supported();
+    let graphics = interactive && qtools::graphics::supported();
     if std::env::var_os("DQ_DEBUG").is_some() {
         eprintln!("dq[debug]: interactive={} graphics={}", interactive, graphics);
     }
@@ -102,59 +102,6 @@ fn main() {
         width: if interactive { term::stdout_width() } else { None },
         graphics
     });
-}
-
-/**
- * Whether the terminal supports any of the raster graphics protocols viuer can drive.
- *
- * The probes work by protocol query (kitty escape query, sixel via DA1) with a device-attributes
- * fallback, so any live terminal answers quickly regardless of $TERM. But viuer reads the reply with
- * a blocking read, so a terminal that never answers would hang dq. We therefore run the probe on a
- * helper thread with a deadline (a truly dead tty is the only thing that hits it), and restore the
- * tty mode afterwards in case a timed-out probe left it raw.
- */
-fn graphics_supported() -> bool {
-    let debug = std::env::var_os("DQ_DEBUG").is_some();
-    let saved = term::save_tty_mode();
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let kitty = viuer::get_kitty_support();
-        let iterm = viuer::is_iterm_supported();
-        // Sixel's DA1 probe is only needed (and only worth its query) when kitty/iTerm say no.
-        let sixel = if kitty != viuer::KittySupport::None || iterm {
-            false
-        } else {
-            viuer::is_sixel_supported()
-        };
-        let _ = tx.send((kitty, iterm, sixel));
-    });
-
-    let outcome = rx.recv_timeout(std::time::Duration::from_millis(1500));
-    if let Some(mode) = saved {
-        term::restore_tty_mode(&mode);
-    }
-
-    match outcome {
-        Ok((kitty, iterm, sixel)) => {
-            let supported = kitty != viuer::KittySupport::None || iterm || sixel;
-            if debug {
-                let kitty = match kitty {
-                    viuer::KittySupport::None => "none",
-                    viuer::KittySupport::Local => "local",
-                    viuer::KittySupport::Remote => "remote"
-                };
-                eprintln!("dq[debug]: kitty={} iterm={} sixel={} -> {}", kitty, iterm, sixel, supported);
-            }
-            supported
-        }
-        Err(_) => {
-            if debug {
-                eprintln!("dq[debug]: capability probe timed out (>1500ms); terminal never replied");
-            }
-            false
-        }
-    }
 }
 
 /**
